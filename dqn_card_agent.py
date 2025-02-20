@@ -598,8 +598,8 @@ class DQNPlayBot(Bot):
         # currently the state is just the state of the hand (multi-hot encoded)
         state = enc_hand.sum(dim=1).to(device, dtype=torch.float)
 
-        if self.steps_done % CHECKPOINT_INTERVAL == 0:
-            self.checkpoint()
+        if self.steps_done % CHECKPOINT_STEPS == 0:
+            self.save_checkpoint(self.steps_done)
 
         advance_steps = True
         command = None
@@ -628,7 +628,7 @@ class DQNPlayBot(Bot):
 
     def select_shop_action(self, G):
         global attempted_purchases
-        logging.info(f"Shop state received: {G}")
+        #logging.info(f"Shop state received: {G}")
 
         specific_joker_cards = {
         "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker", "Droll Joker", "Clever Joker", "Devious Joker", "The Duo", "The Trio", "The Family", "The Order",
@@ -645,15 +645,15 @@ class DQNPlayBot(Bot):
         if "shop" in G and "dollars" in G:
             dollars = G["dollars"]
             cards = G["shop"]["cards"]
-            logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
+            #logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
 
             for i, card in enumerate(cards):
                 if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases:
-                    logging.info(f"Attempting to buy specific card: {card}")
+                    #logging.info(f"Attempting to buy specific card: {card}")
                     attempted_purchases.add(card["label"])  # Track attempted purchases
                     return [Actions.BUY_CARD, [i + 1]]
 
-        logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
+        #logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
         return [Actions.END_SHOP]
 
 
@@ -663,6 +663,8 @@ class DQNPlayBot(Bot):
     def sell_jokers(self, G):
         if len(G["jokers"]) > 3:
             return [Actions.SELL_JOKER, [2]]
+        else:
+            return [Actions.SELL_JOKER, []]
 
     def rearrange_jokers(self, G):
         return [Actions.REARRANGE_JOKERS, []]
@@ -681,7 +683,7 @@ if __name__ == "__main__":
     attempts = 2
 
     bot = DQNPlayBot(
-        deck="Blue Deck", stake=1, seed=None, challenge=None, bot_port=12348
+        deck="Blue Deck", stake=1, seed=None, challenge=None, bot_port=12346
     )
 
     if len(sys.argv) >= 2:
