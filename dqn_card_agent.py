@@ -381,13 +381,42 @@ class DQNPlayBot(Bot):
         return command
 
     def select_shop_action(self, G):
+        global attempted_purchases
+        logging.info(f"Shop state received: {G}")
+
+        specific_joker_cards = {
+        "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker", "Droll Joker",
+        "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit", "Loyalty Card", 
+        "Misprint", "Raised Fist", "Fibonacci", "Scary Face", "Abstract Joker", 
+        "Pareidolia", "Gros Michel", "Even Steven", "Odd Todd", "Scholar", "Supernova",  "Burglar", "Blackboard", "Ice Cream", "Hiker", "Green Joker", 
+        "Cavendish", "Card Sharp", "Red Card", "Hologram", "Baron", "Midas Mask", "Photograph", 
+        "Erosion", "Baseball Card", "Bull", "Popcorn", "Ancient Joker", "Ramen", "Walkie Talkie", "Seltzer", "Castle", "Smiley Face", 
+        "Acrobat", "Sock and Buskin", "Swashbuckler", "Bloodstone", "Arrowhead", "Onyx Agate", "Showman", 
+        "Flower Pot", "Blueprint", "Wee Joker", "Merry Andy", "The Idol", "Seeing Double", "Hit the Road", "The Tribe", "Stuntman", "Brainstorm", "Shoot the Moon", 
+        "Bootstraps", "Triboulet", "Yorik", "Chicot"
+        }
+
+        if "shop" in G and "dollars" in G:
+            dollars = G["dollars"]
+            cards = G["shop"]["cards"]
+            logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
+
+            for i, card in enumerate(cards):
+                if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases:
+                    logging.info(f"Attempting to buy specific card: {card}")
+                    attempted_purchases.add(card["label"])  # Track attempted purchases
+                    return [Actions.BUY_CARD, [i + 1]]
+
+        logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
         return [Actions.END_SHOP]
+
 
     def select_booster_action(self, G):
         return [Actions.SKIP_BOOSTER_PACK]
 
     def sell_jokers(self, G):
-        return [Actions.SELL_JOKER, []]
+        if len(G["jokers"]) > 3:
+            return [Actions.SELL_JOKER, [2]]
 
     def rearrange_jokers(self, G):
         return [Actions.REARRANGE_JOKERS, []]
