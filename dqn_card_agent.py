@@ -385,9 +385,9 @@ class DQNPlayBot(Bot):
         logging.info(f"Shop state received: {G}")
 
         specific_joker_cards = {
-        "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker", "Droll Joker",
-        "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit", "Loyalty Card", 
-        "Misprint", "Raised Fist", "Fibonacci", "Scary Face", "Abstract Joker", 
+        "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker", "Droll Joker", "Clever Joker", "Devious Joker", "The Duo", "The Trio", "The Family", "The Order",
+        "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit", "Loyalty Card", "Jolly Joker", "Sly Joker", "Wily Joker", "Half Joker", "Spare Trousers",
+        "Misprint", "Raised Fist", "Fibonacci", "Scary Face", "Abstract Joker", "Zany Joker", "Mad Joker", "Crazy Joker", "Four Fingers", "Runner",
         "Pareidolia", "Gros Michel", "Even Steven", "Odd Todd", "Scholar", "Supernova",  "Burglar", "Blackboard", "Ice Cream", "Hiker", "Green Joker", 
         "Cavendish", "Card Sharp", "Red Card", "Hologram", "Baron", "Midas Mask", "Photograph", 
         "Erosion", "Baseball Card", "Bull", "Popcorn", "Ancient Joker", "Ramen", "Walkie Talkie", "Seltzer", "Castle", "Smiley Face", 
