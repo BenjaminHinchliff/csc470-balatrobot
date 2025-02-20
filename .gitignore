@@ -4,3 +4,4 @@ gamestate_cache
 .condaenv
 runs
 checkpoints
+config.lua
