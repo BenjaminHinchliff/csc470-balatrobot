@@ -2,6 +2,18 @@ from bot import Bot, Actions
 from gamestates import cache_state
 import time
 
+import logging
+
+# Set up logging for shop interactions and general debugging
+logging.basicConfig(
+    filename="flush_bot_log.log",
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# Tracks previously attempted purchases to avoid repeated buys
+attempted_purchases = set()
+
 
 # Plays flushes if possible
 # otherwise keeps the most common suit
@@ -13,70 +25,105 @@ class FlushBot(Bot):
         return [Actions.SELECT_BLIND]
 
     def select_cards_from_hand(self, G):
-        action = self._select_cards_from_hand(G)
-        print(action)
-        return action
+        logging.debug("Entering select_cards_from_hand")
+        try:
+            action = self._select_cards_from_hand(G)
+            logging.debug(f"Action taken: {action}")
+            return action
+        except Exception as e:
+            logging.error(f"Error in select_cards_from_hand: {e}")
+            return [Actions.PLAY_HAND, [1]]  # Fallback action
 
     def _select_cards_from_hand(self, G):
-        global t
-        global first_time
-        t += 1
+        try:
+            logging.debug(f"Game state before selecting cards: {G}")
 
-        if first_time is None:
-            first_time = time.time()
+            if "hand" not in G or not G["hand"]:
+                logging.error("Hand is empty or missing from game state!")
+                return [Actions.PLAY_HAND, [1]]  # Fallback
 
-        suit_count = {
-            "Hearts": 0,
-            "Diamonds": 0,
-            "Clubs": 0,
-            "Spades": 0,
-        }
-        for card in G["hand"]:
-            suit_count[card["suit"]] += 1
-
-        most_common_suit = max(suit_count, key=suit_count.get)
-        most_common_suit_count = suit_count[most_common_suit]
-        if most_common_suit_count >= 5:
-            flush_cards = []
+            suit_count = {suit: 0 for suit in ["Hearts", "Diamonds", "Clubs", "Spades"]}
             for card in G["hand"]:
-                if card["suit"] == most_common_suit:
-                    flush_cards.append(card)
-            flush_cards.sort(key=lambda x: x["value"], reverse=True)
-            return [
-                Actions.PLAY_HAND,
-                [G["hand"].index(card) + 1 for card in flush_cards[:5]],
-            ]
+                suit_count[card["suit"]] += 1
 
-        # We don't have a flush, so we discard up to 5 cards that are not of the most common suit
-        discards = []
-        for card in G["hand"]:
-            if card["suit"] != most_common_suit:
-                discards.append(card)
-        discards.sort(key=lambda x: x["value"], reverse=True)
-        discards = discards[:5]
-        if len(discards) > 0:
-            if G["current_round"]["discards_left"] > 0:
-                action = Actions.DISCARD_HAND
-            else:
-                action = Actions.PLAY_HAND
-            return [action, [G["hand"].index(card) + 1 for card in discards]]
+            most_common_suit = max(suit_count, key=suit_count.get)
+            most_common_suit_count = suit_count[most_common_suit]
 
-        print(
-            "Somehow don't have a flush, but also don't have any cards to discard. Playing the first card"
-        )
-        return [Actions.PLAY_HAND, [1]]
+            if most_common_suit_count >= 5:
+                flush_cards = [card for card in G["hand"] if card["suit"] == most_common_suit]
+                flush_cards.sort(key=lambda x: x["value"], reverse=True)
+                indices = [G["hand"].index(card) + 1 for card in flush_cards[:5]]
+                action = [Actions.PLAY_HAND, indices]
+
+                if any(i > len(G["hand"]) for i in indices):
+                    logging.error(f"Invalid indices in PLAY_HAND action: {indices}")
+                    return [Actions.PLAY_HAND, [1]]  # Fallback
+                
+                logging.debug(f"Playing flush: {action}")
+                return action
+
+            # Discarding non-suited cards
+            discards = [card for card in G["hand"] if card["suit"] != most_common_suit]
+            discards.sort(key=lambda x: x["value"], reverse=True)
+            discards = discards[:5]
+            indices = [G["hand"].index(card) + 1 for card in discards]
+
+            if len(discards) > 0:
+                action_type = Actions.DISCARD_HAND if G["current_round"]["discards_left"] > 0 else Actions.PLAY_HAND
+                action = [action_type, indices]
+
+                if any(i > len(G["hand"]) for i in indices):
+                    logging.error(f"Invalid indices in DISCARD_HAND action: {indices}")
+                    return [Actions.PLAY_HAND, [1]]  # Fallback
+                
+                logging.debug(f"Discarding non-suited cards: {action}")
+                return action
+
+            logging.warning("No valid flush or discard, playing first card by default.")
+            return [Actions.PLAY_HAND, [1]]
+
+        except Exception as e:
+            logging.error(f"Exception in _select_cards_from_hand: {e}")
+            return [Actions.PLAY_HAND, [1]]  # Fallback action
 
     def select_shop_action(self, G):
-        global t
-        t += 1
+        global attempted_purchases
+        logging.info(f"Shop state received: {G}")
 
+        specific_joker_cards = {
+        "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker",
+ "Droll Joker",
+        "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit", "Loyalty Card", 
+        "Misprint", "Raised Fist", "Fibonacci", "Scary Face", "Abstract Joker", 
+        "Pareidolia", "Gros Michel", "Even Steven", "Odd Todd", "Scholar", "Supernova",  "Burglar", "Blackboard", "Ice Cream", "Hiker", "Green Joker", 
+        "Cavendish", "Card Sharp", "Red Card", "Hologram", "Baron", "Midas Mask", "Photograph", 
+        "Erosion", "Baseball Card", "Bull", "Popcorn", "Ancient Joker", "Ramen", "Walkie Talkie", "Seltzer", "Castle", "Smiley Face", 
+        "Acrobat", "Sock and Buskin", "Swashbuckler", "Bloodstone", "Arrowhead", "Onyx Agate", "Showman", 
+        "Flower Pot", "Blueprint", "Wee Joker", "Merry Andy", "The Idol", "Seeing Double", "Hit the Road", "The Tribe", "Stuntman", "Brainstorm", "Shoot the Moon", 
+        "Bootstraps", "Triboulet", "Yorik", "Chicot"
+        }
+
+        if "shop" in G and "dollars" in G:
+            dollars = G["dollars"]
+            cards = G["shop"]["cards"]
+            logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
+
+            for i, card in enumerate(cards):
+                if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases:
+                    logging.info(f"Attempting to buy specific card: {card}")
+                    attempted_purchases.add(card["label"])  # Track attempted purchases
+                    return [Actions.BUY_CARD, [i + 1]]
+
+        logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
         return [Actions.END_SHOP]
+
+ 
 
     def select_booster_action(self, G):
         return [Actions.SKIP_BOOSTER_PACK]
 
     def sell_jokers(self, G):
-        if len(G["jokers"]) > 1:
+        if len(G["jokers"]) > 3:
             return [Actions.SELL_JOKER, [2]]
 
         return [Actions.SELL_JOKER, []]
