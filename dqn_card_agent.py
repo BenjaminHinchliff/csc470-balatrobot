@@ -22,7 +22,7 @@ LOG_DIR = f"runs/dqn_balatro_{run_id}"
 
 # Checkpoint folder
 # TODO: dynamic checkpoint saving instead of a static path
-LOAD_CHECKPOINT = True
+LOAD_CHECKPOINT = False
 # Important: Last checkpoint will be written over
 SAVE_CHECKPOINT = True
 CHECKPOINT_PATH = "checkpoints/checkpoint.pth"
@@ -180,6 +180,16 @@ class DQNPlayBot(Bot):
     ):
         super().__init__(deck, stake, seed, challenge, bot_port)
 
+        self.hand_counts = {
+            "high_card": 0,
+            "pair": 0,
+            "two_pair": 0,
+            "three_of_a_kind": 0,
+            "straight": 0,
+            "flush": 0,
+            "full_house": 0
+        }
+
         # tensorboard logging
         run_id = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
         self.writer = SummaryWriter(log_dir=f"runs/dqn_balatro_{run_id}")
@@ -236,6 +246,108 @@ class DQNPlayBot(Bot):
         return [
             self.card_to_int(card["suit"], card["value"]) for card in self.G["hand"]
         ]
+    
+    def evaluate_hand(self, hand):
+        """
+        Evaluates the hand for poker combinations.
+        Expects hand as a list of card dictionaries, e.g. {"suit": "Hearts", "value": "Ace"}.
+        Returns a bonus reward based on the hand quality.
+        Hand reward hierarchy:
+        - Full House: +20
+        - Flush: +15
+        - Straight: +15
+        - Three-of-a-Kind: +10
+        - Two Pair: +5
+        - Pair: -2 (penalty)
+        - High Card: -5 (penalty)
+        """
+        ranks = [card["value"] for card in hand]
+        suits = [card["suit"] for card in hand]
+        rank_counts = Counter(ranks)
+        suit_counts = Counter(suits)
+
+        # three-of-a-kind
+        if 3 in rank_counts.values() and sorted(rank_counts.values()) != [2, 3]:
+            return 10
+
+        # full house: one three-of-a-kind and one pair
+        if sorted(rank_counts.values()) == [2, 3]:
+            return 20
+
+        # Check for two pair (only if not full house)
+        if list(rank_counts.values()).count(2) == 2:
+            return 5
+
+        # flush
+        if any(count >= 5 for count in suit_counts.values()):
+            return 15
+
+        # Straight
+        # could use better implementation for ace-low and ace-high strategies
+        rank_order = {r: i for i, r in enumerate(RANKS, start=1)}
+        sorted_ranks = sorted(rank_order[rank] for rank in set(ranks))
+        # Look for consecutive sequences
+        consecutive = 1
+        for i in range(1, len(sorted_ranks)):
+            if sorted_ranks[i] == sorted_ranks[i-1] + 1:
+                consecutive += 1
+                if consecutive >= 5:
+                    return 15
+                    break
+            else:
+                consecutive = 1
+        
+        # Check for a single Pair
+        if 2 in rank_counts.values():
+            return -2
+        
+        # If none of the above, it's a High Card situation
+        return -5
+    
+    def classify_hand(self, hand):
+        """
+        To keep track of how the agent is selecting hands.
+        Classifies the hand into one of these categories:
+        "full_house", "flush", "straight", "three_of_a_kind", "two_pair", "pair", or "high_card".
+        Expects hand as a list of card dictionaries, e.g. {"suit": "Hearts", "value": "Ace"}.
+        """
+        ranks = [card["value"] for card in hand]
+        suits = [card["suit"] for card in hand]
+        rank_counts = Counter(ranks)
+        suit_counts = Counter(suits)
+
+        # flush
+        is_flush = any(count >= 5 for count in suit_counts.values())
+
+        # straight (no ace-high/ace-low)
+        is_straight = False
+        rank_order = {r: i for i, r in enumerate(RANKS, start=1)}
+        sorted_ranks = sorted(rank_order[rank] for rank in set(ranks))
+        consecutive = 1
+        for i in range(1, len(sorted_ranks)):
+            if sorted_ranks[i] == sorted_ranks[i - 1] + 1:
+                consecutive += 1
+                if consecutive >= 5:
+                    is_straight = True
+                    break
+            else:
+                consecutive = 1
+
+        # Determine hand type based on a hierarchy:
+        # Full house, flush, straight, three-of-a-kind, two pair, pair, high card
+        if sorted(rank_counts.values()) == [2, 3]:
+            return "full_house"
+        if is_flush:
+            return "flush"
+        if is_straight:
+            return "straight"
+        if 3 in rank_counts.values():
+            return "three_of_a_kind"
+        if list(rank_counts.values()).count(2) >= 2:
+            return "two_pair"
+        if 2 in rank_counts.values():
+            return "pair"
+        return "high_card"
 
     def random_action(self):
         hand = torch.tensor(self.hand_to_ints(), dtype=torch.float32)
@@ -444,19 +556,36 @@ class DQNPlayBot(Bot):
         #reward = score - self.last_score
 
         # don't really want to store this in state
+        # should store or grab from API
         start_discards = 3
         start_hands = 5
         scaling_factor = 5 #λ
         score = self.G["chips"]
+        self.writer.add_scalar("Chip reward", score, self.steps_done)
         
-        resource_bonus = scaling_factor * ((start_discards - self.G["current_round"]["discards_left"]) / 
-                                           start_discards + (start_hands - self.G["current_round"]["hands_left"]) / start_hands)
+        resource_bonus = scaling_factor * (
+            ((start_discards - self.G["current_round"]["discards_left"]) / start_discards) +
+            ((start_hands - self.G["current_round"]["hands_left"]) / start_hands)
+        )
         
         chip_reward = score - self.last_score
-        reward = max(chip_reward + resource_bonus, 0)
+
+        # evaluate current hand, apply bonus to better hands (duh)
+        hand_bonus = self.evaluate_hand(self.G["hand"])
+
+        reward = max(chip_reward + resource_bonus + hand_bonus, 0)
         is_final = reward < 0
         self.writer.add_scalar("Reward/Delta", reward, self.steps_done)
-        print(f"reward delta: {reward}")
+        #print(f"reward delta: {reward}")
+
+        # for logging only, classify hand
+        hand_type = self.classify_hand(self.G["hand"])
+
+        # increment the counter for this hand type
+        if hand_type in self.hand_counts:
+            self.hand_counts[hand_type] += 1
+
+        self.writer.add_scalars("HandCounts", self.hand_counts, self.steps_done)
 
         hand = self.hand_to_ints()
         enc_hand = F.one_hot(torch.tensor([hand]), num_classes=len(SUITS) * len(RANKS))
