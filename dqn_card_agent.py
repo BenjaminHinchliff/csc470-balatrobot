@@ -1,8 +1,11 @@
 import math
-from os import stat
+import os
 import random
 from collections import Counter, namedtuple, deque
-from itertools import product, combinations
+import random
+import time
+from pathlib import Path
+from datetime import datetime
 import sys
 
 import torch
@@ -11,7 +14,6 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-import random
 from bot import Bot, Actions
 import datetime
 import time
@@ -370,20 +372,18 @@ class DQNPlayBot(Bot):
             .max(2)
             .indices
         )
-        option_choice = (
-            actions[:, N_CARDS * MAX_CARDS_PER_HAND :].max(1).indices
-        )
+        option_choice = actions[:, N_CARDS * MAX_CARDS_PER_HAND :].max(1).indices
         return torch.cat((card_choices, option_choice.unsqueeze(1)), dim=1)
-        
 
-    def select_action(self, state):
+    def select_action(self, state, advance_steps=True):
         sample = random.random()
         eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(
             -1.0 * self.steps_done / EPS_DECAY
         )
         self.writer.add_scalar("Epsilon/Threshold", eps_threshold, self.steps_done)
         print(f"Current threshold: {eps_threshold}")
-        self.steps_done += 1
+        if advance_steps:
+            self.steps_done += 1
         if sample > eps_threshold:
             print("performing neural action...")
             with torch.no_grad():
@@ -475,18 +475,24 @@ class DQNPlayBot(Bot):
         # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
         # columns of actions taken. These are the actions which would've been taken
         # for each batch state according to policy_net
-        state_action_values = self.gather_action_weights(self.policy_net(state_batch), action_batch)
+        state_action_values = self.gather_action_weights(
+            self.policy_net(state_batch), action_batch
+        )
 
         # Compute V(s_{t+1}) for all next states.
         # Expected values of actions for non_final_next_states are computed based
         # on the "older" target_net; selecting their best reward with max(1).values
         # This is merged based on the mask, such that we'll have either the expected
         # state value or 0 in case the state was final.
-        next_state_values = torch.zeros((BATCH_SIZE, MAX_CARDS_PER_HAND + 1), device=device)
+        next_state_values = torch.zeros(
+            (BATCH_SIZE, MAX_CARDS_PER_HAND + 1), device=device
+        )
         with torch.no_grad():
             next_actions = self.target_net(non_final_next_states)
             next_choices = self.build_choices_from_action(next_actions)
-            next_state_values[non_final_mask] = self.gather_action_weights(next_actions, next_choices)
+            next_state_values[non_final_mask] = self.gather_action_weights(
+                next_actions, next_choices
+            )
         # Compute the expected Q values
         expected_state_action_values = (next_state_values * GAMMA) + reward_batch
 
@@ -592,11 +598,16 @@ class DQNPlayBot(Bot):
         # currently the state is just the state of the hand (multi-hot encoded)
         state = enc_hand.sum(dim=1).to(device, dtype=torch.float)
 
+        if self.steps_done % CHECKPOINT_INTERVAL == 0:
+            self.checkpoint()
+
+        advance_steps = True
         command = None
         while True:
             self.learn(state, reward, is_final)
 
-            action = self.select_action(state)
+            action = self.select_action(state, advance_steps)
+            advance_steps = False
             command = self.action_to_command(action)
 
             self.last_score = score
@@ -616,13 +627,42 @@ class DQNPlayBot(Bot):
         return command
 
     def select_shop_action(self, G):
+        global attempted_purchases
+        logging.info(f"Shop state received: {G}")
+
+        specific_joker_cards = {
+        "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker", "Droll Joker", "Clever Joker", "Devious Joker", "The Duo", "The Trio", "The Family", "The Order",
+        "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit", "Loyalty Card", "Jolly Joker", "Sly Joker", "Wily Joker", "Half Joker", "Spare Trousers",
+        "Misprint", "Raised Fist", "Fibonacci", "Scary Face", "Abstract Joker", "Zany Joker", "Mad Joker", "Crazy Joker", "Four Fingers", "Runner",
+        "Pareidolia", "Gros Michel", "Even Steven", "Odd Todd", "Scholar", "Supernova",  "Burglar", "Blackboard", "Ice Cream", "Hiker", "Green Joker", 
+        "Cavendish", "Card Sharp", "Red Card", "Hologram", "Baron", "Midas Mask", "Photograph", 
+        "Erosion", "Baseball Card", "Bull", "Popcorn", "Ancient Joker", "Ramen", "Walkie Talkie", "Seltzer", "Castle", "Smiley Face", 
+        "Acrobat", "Sock and Buskin", "Swashbuckler", "Bloodstone", "Arrowhead", "Onyx Agate", "Showman", 
+        "Flower Pot", "Blueprint", "Wee Joker", "Merry Andy", "The Idol", "Seeing Double", "Hit the Road", "The Tribe", "Stuntman", "Brainstorm", "Shoot the Moon", 
+        "Bootstraps", "Triboulet", "Yorik", "Chicot"
+        }
+
+        if "shop" in G and "dollars" in G:
+            dollars = G["dollars"]
+            cards = G["shop"]["cards"]
+            logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
+
+            for i, card in enumerate(cards):
+                if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases:
+                    logging.info(f"Attempting to buy specific card: {card}")
+                    attempted_purchases.add(card["label"])  # Track attempted purchases
+                    return [Actions.BUY_CARD, [i + 1]]
+
+        logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
         return [Actions.END_SHOP]
+
 
     def select_booster_action(self, G):
         return [Actions.SKIP_BOOSTER_PACK]
 
     def sell_jokers(self, G):
-        return [Actions.SELL_JOKER, []]
+        if len(G["jokers"]) > 3:
+            return [Actions.SELL_JOKER, [2]]
 
     def rearrange_jokers(self, G):
         return [Actions.REARRANGE_JOKERS, []]
@@ -643,6 +683,10 @@ if __name__ == "__main__":
     bot = DQNPlayBot(
         deck="Blue Deck", stake=1, seed=None, challenge=None, bot_port=12348
     )
+
+    if len(sys.argv) >= 2:
+        bot.load_checkpoint(Path(sys.argv[1]))
+
     bot.start_balatro_instance()
     time.sleep(10)
 
