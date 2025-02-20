@@ -218,6 +218,7 @@ class DQNPlayBot(Bot):
             'optimizer_state_dict': self.optimizer.state_dict(),
             'replay_memory': list(self.memory.memory)
         }
+        Path(CHECKPOINT_PATH).parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, CHECKPOINT_PATH)
         print(f"Checkpoint saved at step {step} to {CHECKPOINT_PATH}")
 
