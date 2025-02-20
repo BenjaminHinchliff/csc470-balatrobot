@@ -122,6 +122,7 @@ function Utils.getRoundData()
 
     if G and G.GAME and G.GAME.current_round then
         _current_round.discards_left = G.GAME.current_round.discards_left
+        _current_round.hands_left = G.GAME.current_round.hands_left
     end
 
     return _current_round

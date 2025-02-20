@@ -9,10 +9,26 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 import random
 from bot import Bot, Actions
+import datetime
 import time
+
+# Tensorboard logging folder
+run_id = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
+LOG_DIR = f"runs/dqn_balatro_{run_id}"
+
+# Checkpoint folder
+# TODO: dynamic checkpoint saving instead of a static path
+LOAD_CHECKPOINT = True
+# Important: Last checkpoint will be written over
+SAVE_CHECKPOINT = True
+CHECKPOINT_PATH = "checkpoints/checkpoint.pth"
+
+# amount of steps between saving replays
+CHECKPOINT_STEPS = 2500
 
 # if GPU is to be used
 device = torch.device(
@@ -44,10 +60,10 @@ class DQN(nn.Module):
 
     def __init__(self, n_observations, n_actions):
         super(DQN, self).__init__()
-        self.layer1 = nn.Linear(n_observations, 128)
-        self.layer2 = nn.Linear(128, 128)
-        self.layer3 = nn.Linear(128, 256)
-        self.layer4 = nn.Linear(256, n_actions)
+        self.layer1 = nn.Linear(n_observations, 256)
+        self.layer2 = nn.Linear(256, 256)
+        self.layer3 = nn.Linear(256, 512)
+        self.layer4 = nn.Linear(512, n_actions)
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
@@ -144,13 +160,13 @@ N_ACTIONS = N_CARDS * MAX_CARDS_PER_HAND + len(PLAY_OPTIONS)
 # EPS_DECAY controls the rate of exponential decay of epsilon, higher means a slower decay
 # TAU is the update rate of the target network
 # LR is the learning rate of the ``AdamW`` optimizer
-BATCH_SIZE = 32
-GAMMA = 0.9
-EPS_START = 0.9
+BATCH_SIZE = 128
+GAMMA = 0.95
+EPS_START = 1.0
 EPS_END = 0.05
-EPS_DECAY = 500
-TAU = 0.05
-LR = 1e-4
+EPS_DECAY = 20000
+TAU = 0.0085
+LR = 7e-5
 
 
 class DQNPlayBot(Bot):
@@ -164,16 +180,47 @@ class DQNPlayBot(Bot):
     ):
         super().__init__(deck, stake, seed, challenge, bot_port)
 
+        # tensorboard logging
+        run_id = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
+        self.writer = SummaryWriter(log_dir=f"runs/dqn_balatro_{run_id}")
+
         self.steps_done = 0
         self.policy_net = DQN(N_OBSERVATIONS, N_ACTIONS).to(device)
         self.target_net = DQN(N_OBSERVATIONS, N_ACTIONS).to(device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=LR, amsgrad=True)
-        self.memory = ReplayMemory(capacity=1000)
+        self.memory = ReplayMemory(capacity=2500)
         self.last_state = None
         self.last_action = None
         self.last_score = 0
+
+        if LOAD_CHECKPOINT and CHECKPOINT_PATH is not None:
+            self.load_checkpoint(CHECKPOINT_PATH)
+
+    def save_checkpoint(self, step):
+        checkpoint = {
+            'steps_done': self.steps_done,
+            'policy_net_state_dict': self.policy_net.state_dict(),
+            'target_net_state_dict': self.target_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'replay_memory': list(self.memory.memory)
+        }
+        torch.save(checkpoint, CHECKPOINT_PATH)
+        print(f"Checkpoint saved at step {step} to {CHECKPOINT_PATH}")
+
+    def load_checkpoint(self, checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        self.steps_done = checkpoint.get("steps_done", 0)
+        self.policy_net.load_state_dict(checkpoint["policy_net_state_dict"])
+        self.target_net.load_state_dict(checkpoint["target_net_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # Load replay memory: convert the saved list back to a deque with the same capacity.
+        replay_memory_list = checkpoint.get("replay_memory", [])
+        self.memory.memory = deque(replay_memory_list, maxlen=self.memory.memory.maxlen)
+
+        print(f"Checkpoint loaded from {checkpoint_path}")
 
     def skip_or_select_blind(self, G):
         return [Actions.SELECT_BLIND]
@@ -222,6 +269,7 @@ class DQNPlayBot(Bot):
         eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(
             -1.0 * self.steps_done / EPS_DECAY
         )
+        self.writer.add_scalar("Epsilon/Threshold", eps_threshold, self.steps_done)
         print(f"Current threshold: {eps_threshold}")
         self.steps_done += 1
         if sample > eps_threshold:
@@ -291,7 +339,7 @@ class DQNPlayBot(Bot):
     def optimize_model(self):
         if len(self.memory) < BATCH_SIZE:
             return
-        print(f"perform optimize step...")
+        #print(f"perform optimize step...")
         transitions = self.memory.sample(BATCH_SIZE)
         # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for
         # detailed explanation). This converts batch-array of Transitions
@@ -334,6 +382,9 @@ class DQNPlayBot(Bot):
         criterion = nn.SmoothL1Loss()
         loss = criterion(state_action_values, expected_state_action_values)
 
+        # Log loss value
+        self.writer.add_scalar("Loss", loss.item(), self.steps_done)
+
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
@@ -365,10 +416,46 @@ class DQNPlayBot(Bot):
             ] * TAU + target_net_state_dict[key] * (1 - TAU)
         self.target_net.load_state_dict(target_net_state_dict)
 
+        # Save checkpoint every N steps
+        if self.steps_done % CHECKPOINT_STEPS == 0 and SAVE_CHECKPOINT:
+            self.save_checkpoint(self.steps_done)
+
     def select_cards_from_hand(self, G):
+        """
+        Option 1:
+        Tuning reward based on resource usage:
+        If the agent has used many discards and hands, the term is high,
+            suggesting that the agent took actions to improve the hand
+        Conversely, if resources are hoarded when cards need to be discarded,
+            the term remains low
+
+        Heuristic given a fixed D discards and H hands
+        Calculate resource usage as
+        λ((D - discards_left)/D + (H - hands_left)/H)
+
+        combining this with given chip rewards
+        reward = (current_chips - last_chips) + resource_usage
+
+        Option 2:
+        Penalize leaving too many unused resouces when the hand quality is poor
+        penalty = λ((discards_left)/D + (hands_left)/H)
+        """
+        #reward = max(score - self.last_score, 0)
+        #reward = score - self.last_score
+
+        # don't really want to store this in state
+        start_discards = 3
+        start_hands = 5
+        scaling_factor = 5 #λ
         score = self.G["chips"]
-        reward = max(score - self.last_score, 0)
+        
+        resource_bonus = scaling_factor * ((start_discards - self.G["current_round"]["discards_left"]) / 
+                                           start_discards + (start_hands - self.G["current_round"]["hands_left"]) / start_hands)
+        
+        chip_reward = score - self.last_score
+        reward = max(chip_reward + resource_bonus, 0)
         is_final = reward < 0
+        self.writer.add_scalar("Reward/Delta", reward, self.steps_done)
         print(f"reward delta: {reward}")
 
         hand = self.hand_to_ints()
@@ -391,8 +478,11 @@ class DQNPlayBot(Bot):
                 break
             else:
                 print("Invalid action, applying penalty")
-                reward = -25
+                reward = -15
                 is_final = False
+        
+        # Log final reward
+        self.writer.add_scalar("Reward/Final", reward, self.steps_done)
         print(f"Commiting action: {command}")
         return command
 
@@ -431,3 +521,4 @@ if __name__ == "__main__":
         print(f"attempt: {i}")
         bot.run()
     bot.stop_balatro_instance()
+    bot.writer.close()
