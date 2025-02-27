@@ -87,8 +87,11 @@ class FlushBot(Bot):
             return [Actions.PLAY_HAND, [1]]  # Fallback action
 
     def select_shop_action(self, G):
-        global attempted_purchases
+        global attempted_purchases, attempted_rerolls
         logging.info(f"Shop state received: {G}")
+
+        if not hasattr(self, "rerolled_once"):
+            self.rerolled_once = False  # Track if we've rerolled already
 
         specific_joker_cards = {
         "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker",
@@ -105,19 +108,30 @@ class FlushBot(Bot):
 
         if "shop" in G and "dollars" in G:
             dollars = G["dollars"]
-            cards = G["shop"]["cards"]
-            logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
+            shop_cards = G["shop"].get("cards", [])
 
-            for i, card in enumerate(cards):
+            logging.info(f"Current dollars: {dollars}, Available cards: {shop_cards}")
+
+            # Try to buy a Joker if available
+            for i, card in enumerate(shop_cards):
                 if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases:
-                    logging.info(f"Attempting to buy specific card: {card}")
-                    attempted_purchases.add(card["label"])  # Track attempted purchases
+                    logging.info(f"Attempting to buy specific Joker: {card['label']}")
+                    attempted_purchases.add(card["label"])
+                    self.rerolled_once = True
                     return [Actions.BUY_CARD, [i + 1]]
 
-        logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
-        return [Actions.END_SHOP]
+            # If no Joker was found and we haven't rerolled yet, attempt a reroll
+            if not self.rerolled_once:
+                logging.info("No Jokers found in initial shop, rerolling once.")
+                self.rerolled_once = True
+                return [Actions.REROLL_SHOP]
 
- 
+        # If no purchase was made and reroll has already happened, end shop interaction
+        logging.info("No valid purchase or reroll available, ending shop interaction.")
+        if hasattr(self, "rerolled_once"):
+            delattr(self, "rerolled_once")  # Removes the attribute from the object
+
+        return [Actions.END_SHOP]
 
     def select_booster_action(self, G):
         return [Actions.SKIP_BOOSTER_PACK]
