@@ -87,45 +87,84 @@ class FlushBot(Bot):
             return [Actions.PLAY_HAND, [1]]  # Fallback action
 
     def select_shop_action(self, G):
-        global attempted_purchases
+        global attempted_purchases, attempted_rerolls
         logging.info(f"Shop state received: {G}")
+
+        # End shop action instantly if the number of jokers held is 5 or more
+        if len(G.get("jokers", [])) >= 5:
+            logging.info("5 or more jokers held, ending shop action instantly.")
+            return [Actions.END_SHOP]
+
+        if not hasattr(self, "rerolled_once"):
+            self.rerolled_once = False  # Track if we've rerolled already
 
         specific_joker_cards = {
         "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker",
- "Droll Joker",
-        "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit", "Loyalty Card", 
-        "Misprint", "Raised Fist", "Fibonacci", "Scary Face", "Abstract Joker", 
-        "Pareidolia", "Gros Michel", "Even Steven", "Odd Todd", "Scholar", "Supernova",  "Burglar", "Blackboard", "Ice Cream", "Hiker", "Green Joker", 
-        "Cavendish", "Card Sharp", "Red Card", "Hologram", "Baron", "Midas Mask", "Photograph", 
-        "Erosion", "Baseball Card", "Bull", "Popcorn", "Ancient Joker", "Ramen", "Walkie Talkie", "Seltzer", "Castle", "Smiley Face", 
-        "Acrobat", "Sock and Buskin", "Swashbuckler", "Bloodstone", "Arrowhead", "Onyx Agate", "Showman", 
-        "Flower Pot", "Blueprint", "Wee Joker", "Merry Andy", "The Idol", "Seeing Double", "Hit the Road", "The Tribe", "Stuntman", "Brainstorm", "Shoot the Moon", 
-        "Bootstraps", "Triboulet", "Yorik", "Chicot"
+        "Droll Joker", "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit",
+        "Loyalty Card", "Misprint", "Raised Fist", "Fibonacci", "Scary Face",
+        "Abstract Joker", "Pareidolia", "Gros Michel", "Even Steven", "Odd Todd",
+        "Scholar", "Supernova", "Burglar", "Blackboard", "Ice Cream", "Hiker",
+        "Green Joker", "Cavendish", "Card Sharp", "Red Card",
+        "Baron", "Midas Mask", "Photograph", "Erosion", "Baseball Card", "Bull",
+        "Popcorn", "Ancient Joker", "Ramen", "Walkie Talkie", "Seltzer", "Castle",
+        "Smiley Face", "Acrobat", "Sock and Buskin", "Swashbuckler", "Bloodstone",
+        "Arrowhead", "Onyx Agate", "Showman", "Flower Pot", "Blueprint", "Wee Joker",
+        "Merry Andy", "The Idol", "Seeing Double", "Hit the Road", "The Tribe",
+        "Stuntman", "Brainstorm", "Shoot the Moon", "Bootstraps", "Triboulet",
+        "Yorik", "Chicot"
         }
 
         if "shop" in G and "dollars" in G:
             dollars = G["dollars"]
-            cards = G["shop"]["cards"]
-            logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
+            shop_cards = G["shop"].get("cards", [])
 
-            for i, card in enumerate(cards):
-                if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases:
-                    logging.info(f"Attempting to buy specific card: {card}")
-                    attempted_purchases.add(card["label"])  # Track attempted purchases
+            logging.info(f"Current dollars: {dollars}, Available cards: {shop_cards}")
+
+            # Try to buy a Joker if available
+            for i, card in enumerate(shop_cards):
+                if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases and len(G.get("jokers", [])) < 5:
+                    logging.info(f"Attempting to buy specific Joker: {card['label']}")
+                    attempted_purchases.add(card["label"])
+                    self.rerolled_once = True
                     return [Actions.BUY_CARD, [i + 1]]
 
-        logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
+            # If no Joker was found and we haven't rerolled yet, attempt a reroll
+            if not self.rerolled_once:
+                logging.info("No Jokers found in initial shop, rerolling once.")
+                self.rerolled_once = True
+                return [Actions.REROLL_SHOP]
+
+        # If no purchase was made and reroll has already happened, end shop interaction
+        logging.info("No valid purchase or reroll available, ending shop interaction.")
+        if hasattr(self, "rerolled_once"):
+            delattr(self, "rerolled_once")  # Removes the attribute from the object
+
         return [Actions.END_SHOP]
 
- 
 
     def select_booster_action(self, G):
         return [Actions.SKIP_BOOSTER_PACK]
 
     def sell_jokers(self, G):
-        if len(G["jokers"]) > 3:
-            return [Actions.SELL_JOKER, [2]]
+        # Jokers that should NOT be sold
+        jokers_to_keep = {
+        "Droll Joker", "Crafty Joker", "The Tribe", "Blueprint", "Brainstorm",
+        "Cavendish", "Canio", "Hiker", "Blackboard", "Card Sharp", "Abstract Joker"
+        }
 
+        # Check the list of jokers sequentially
+        if len(G["jokers"]) > 4:
+            for i, joker in enumerate(G.get("jokers", []), start=1):
+                if joker["label"] not in jokers_to_keep:
+                    logging.info(f"Selling joker: {joker['label']} at position {i}")
+                    return [Actions.SELL_JOKER, [i]]
+
+            # If no joker was sold, return an empty sell action
+            logging.info("No eligible jokers to sell.")
+            return [Actions.SELL_JOKER, []]
+
+        # If no joker was sold, return an empty sell action
+        logging.info("No eligible jokers to sell.")
         return [Actions.SELL_JOKER, []]
 
     def rearrange_jokers(self, G):
