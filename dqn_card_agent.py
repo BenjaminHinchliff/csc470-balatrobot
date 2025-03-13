@@ -63,9 +63,11 @@ class DQN(nn.Module):
     def __init__(self, n_observations, n_actions):
         super(DQN, self).__init__()
         self.layer1 = nn.Linear(n_observations, 256)
-        self.layer2 = nn.Linear(256, 256)
-        self.layer3 = nn.Linear(256, 512)
-        self.layer4 = nn.Linear(512, n_actions)
+        self.layer2 = nn.Linear(256, 512)
+        self.layer3 = nn.Linear(512, 1024)
+        self.layer4 = nn.Linear(1024, 512)
+        self.layer5 = nn.Linear(512, 256)
+        self.layer6 = nn.Linear(256, n_actions)
 
     # Called with either one element to determine next action, or a batch
     # during optimization. Returns tensor([[left0exp,right0exp]...]).
@@ -73,7 +75,9 @@ class DQN(nn.Module):
         x = F.relu(self.layer1(x))
         x = F.relu(self.layer2(x))
         x = F.relu(self.layer3(x))
-        return self.layer4(x)
+        x = F.relu(self.layer4(x))
+        x = F.relu(self.layer5(x))
+        return self.layer6(x)
 
 
 # episode_durations = []
@@ -165,7 +169,7 @@ BATCH_SIZE = 128
 GAMMA = 0.99
 EPS_START = 0.9
 EPS_END = 0.05
-EPS_DECAY = 500
+EPS_DECAY = 1000
 TAU = 0.005
 LR = 1e-4
 
@@ -188,7 +192,7 @@ class DQNPlayBot(Bot):
             "three_of_a_kind": 0,
             "straight": 0,
             "flush": 0,
-            "full_house": 0
+            "full_house": 0,
         }
 
         # tensorboard logging
@@ -214,18 +218,20 @@ class DQNPlayBot(Bot):
 
     def save_checkpoint(self, step):
         checkpoint = {
-            'steps_done': self.steps_done,
-            'policy_net_state_dict': self.policy_net.state_dict(),
-            'target_net_state_dict': self.target_net.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'replay_memory': list(self.memory.memory)
+            "steps_done": self.steps_done,
+            "policy_net_state_dict": self.policy_net.state_dict(),
+            "target_net_state_dict": self.target_net.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "replay_memory": list(self.memory.memory),
         }
         Path(CHECKPOINT_PATH).parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, CHECKPOINT_PATH)
         print(f"Checkpoint saved at step {step} to {CHECKPOINT_PATH}")
 
     def load_checkpoint(self, checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        checkpoint = torch.load(
+            checkpoint_path, map_location=device, weights_only=False
+        )
         self.steps_done = checkpoint.get("steps_done", 0)
         self.policy_net.load_state_dict(checkpoint["policy_net_state_dict"])
         self.target_net.load_state_dict(checkpoint["target_net_state_dict"])
@@ -258,7 +264,7 @@ class DQNPlayBot(Bot):
         # Look for consecutive sequences
         consecutive = 1
         for i in range(1, len(sorted_ranks)):
-            if sorted_ranks[i] == sorted_ranks[i-1] + 1:
+            if sorted_ranks[i] == sorted_ranks[i - 1] + 1:
                 consecutive += 1
                 if consecutive >= 5:
                     return True
@@ -266,7 +272,6 @@ class DQNPlayBot(Bot):
                 consecutive = 1
         return False
 
-    
     def evaluate_hand(self, hand):
         """
         Evaluates the hand for poker combinations.
@@ -319,7 +324,6 @@ class DQNPlayBot(Bot):
         if DQNPlayBot.check_straights(ranks, rank_order):
             return "straight"
 
-
         # full house: one three-of-a-kind and one pair
         # flush
         if any(count >= 5 for count in suit_counts.values()):
@@ -351,10 +355,14 @@ class DQNPlayBot(Bot):
             dim=1,
         ).to(device)
 
-    def build_choices_from_action(self, actions):
+    def build_choices_from_action(self, actions, hand_encoded):
         card_choices = (
-            actions[:, : N_CARDS * MAX_CARDS_PER_HAND]
-            .view(-1, MAX_CARDS_PER_HAND, N_CARDS)
+            (
+                actions[:, : N_CARDS * MAX_CARDS_PER_HAND].view(
+                    -1, MAX_CARDS_PER_HAND, N_CARDS
+                )
+                * hand_encoded.unsqueeze(1)
+            )
             .max(2)
             .indices
         )
@@ -378,7 +386,7 @@ class DQNPlayBot(Bot):
                 # found, so we pick action with the larger expected reward.
 
                 # the model outputs the cards it "wants" to play five times (can be any card in the deck)
-                return self.build_choices_from_action(self.policy_net(state))
+                return self.build_choices_from_action(self.policy_net(state), state)
         else:
             return self.random_action()
 
@@ -437,7 +445,7 @@ class DQNPlayBot(Bot):
     def optimize_model(self):
         if len(self.memory) < BATCH_SIZE:
             return
-        #print(f"perform optimize step...")
+        # print(f"perform optimize step...")
         transitions = self.memory.sample(BATCH_SIZE)
         # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for
         # detailed explanation). This converts batch-array of Transitions
@@ -475,7 +483,9 @@ class DQNPlayBot(Bot):
         )
         with torch.no_grad():
             next_actions = self.target_net(non_final_next_states)
-            next_choices = self.build_choices_from_action(next_actions)
+            next_choices = self.build_choices_from_action(
+                next_actions, non_final_next_states
+            )
             next_state_values[non_final_mask] = self.gather_action_weights(
                 next_actions, next_choices
             )
@@ -544,22 +554,25 @@ class DQNPlayBot(Bot):
         Penalize leaving too many unused resouces when the hand quality is poor
         penalty = λ((discards_left)/D + (hands_left)/H)
         """
-        #reward = max(score - self.last_score, 0)
-        #reward = score - self.last_score
+        # reward = max(score - self.last_score, 0)
+        # reward = score - self.last_score
 
         # don't really want to store this in state
         # should store or grab from API
         start_discards = 3
         start_hands = 5
-        scaling_factor = 5 #λ
+        scaling_factor = 5  # λ
         score = self.G["chips"]
         self.writer.add_scalar("Chip reward", score, self.steps_done)
-        
+
         resource_bonus = scaling_factor * (
-            ((start_discards - self.G["current_round"]["discards_left"]) / start_discards) +
-            ((start_hands - self.G["current_round"]["hands_left"]) / start_hands)
+            (
+                (start_discards - self.G["current_round"]["discards_left"])
+                / start_discards
+            )
+            + ((start_hands - self.G["current_round"]["hands_left"]) / start_hands)
         )
-        
+
         chip_reward = score - self.last_score
 
         # evaluate current hand, apply bonus to better hands (duh)
@@ -568,7 +581,7 @@ class DQNPlayBot(Bot):
         reward = max(chip_reward + resource_bonus + hand_bonus, 0)
         is_final = reward < 0
         self.writer.add_scalar("Reward/Delta", reward, self.steps_done)
-        #print(f"reward delta: {reward}")
+        # print(f"reward delta: {reward}")
 
         # for logging only, classify hand
         hand_type = self.classify_hand(self.G["hand"])
@@ -589,6 +602,7 @@ class DQNPlayBot(Bot):
 
         advance_steps = True
         command = None
+        retries = 0
         while True:
             self.learn(state, reward, is_final)
 
@@ -603,44 +617,122 @@ class DQNPlayBot(Bot):
             if self.validate_command(command):
                 break
             else:
-                print("Invalid action, applying penalty")
-                reward = -15
+                retries += 1
+                reward = 0
                 is_final = False
-        
+
+        self.writer.add_scalar("Action Retries", retries, self.steps_done)
         # Log final reward
         self.writer.add_scalar("Reward/Final", reward, self.steps_done)
         print(f"Commiting action: {command}")
         return command
 
     def select_shop_action(self, G):
-        #logging.info(f"Shop state received: {G}")
+        # logging.info(f"Shop state received: {G}")
 
         specific_joker_cards = {
-        "Joker", "Greedy Joker", "Lusty Joker", "Wrathful Joker", "Gluttonous Joker", "Droll Joker", "Clever Joker", "Devious Joker", "The Duo", "The Trio", "The Family", "The Order",
-        "Crafty Joker", "Joker Stencil", "Banner", "Mystic Summit", "Loyalty Card", "Jolly Joker", "Sly Joker", "Wily Joker", "Half Joker", "Spare Trousers",
-        "Misprint", "Raised Fist", "Fibonacci", "Scary Face", "Abstract Joker", "Zany Joker", "Mad Joker", "Crazy Joker", "Four Fingers", "Runner",
-        "Pareidolia", "Gros Michel", "Even Steven", "Odd Todd", "Scholar", "Supernova",  "Burglar", "Blackboard", "Ice Cream", "Hiker", "Green Joker", 
-        "Cavendish", "Card Sharp", "Red Card", "Hologram", "Baron", "Midas Mask", "Photograph", 
-        "Erosion", "Baseball Card", "Bull", "Popcorn", "Ancient Joker", "Ramen", "Walkie Talkie", "Seltzer", "Castle", "Smiley Face", 
-        "Acrobat", "Sock and Buskin", "Swashbuckler", "Bloodstone", "Arrowhead", "Onyx Agate", "Showman", 
-        "Flower Pot", "Blueprint", "Wee Joker", "Merry Andy", "The Idol", "Seeing Double", "Hit the Road", "The Tribe", "Stuntman", "Brainstorm", "Shoot the Moon", 
-        "Bootstraps", "Triboulet", "Yorik", "Chicot"
+            "Joker",
+            "Greedy Joker",
+            "Lusty Joker",
+            "Wrathful Joker",
+            "Gluttonous Joker",
+            "Droll Joker",
+            "Clever Joker",
+            "Devious Joker",
+            "The Duo",
+            "The Trio",
+            "The Family",
+            "The Order",
+            "Crafty Joker",
+            "Joker Stencil",
+            "Banner",
+            "Mystic Summit",
+            "Loyalty Card",
+            "Jolly Joker",
+            "Sly Joker",
+            "Wily Joker",
+            "Half Joker",
+            "Spare Trousers",
+            "Misprint",
+            "Raised Fist",
+            "Fibonacci",
+            "Scary Face",
+            "Abstract Joker",
+            "Zany Joker",
+            "Mad Joker",
+            "Crazy Joker",
+            "Four Fingers",
+            "Runner",
+            "Pareidolia",
+            "Gros Michel",
+            "Even Steven",
+            "Odd Todd",
+            "Scholar",
+            "Supernova",
+            "Burglar",
+            "Blackboard",
+            "Ice Cream",
+            "Hiker",
+            "Green Joker",
+            "Cavendish",
+            "Card Sharp",
+            "Red Card",
+            "Hologram",
+            "Baron",
+            "Midas Mask",
+            "Photograph",
+            "Erosion",
+            "Baseball Card",
+            "Bull",
+            "Popcorn",
+            "Ancient Joker",
+            "Ramen",
+            "Walkie Talkie",
+            "Seltzer",
+            "Castle",
+            "Smiley Face",
+            "Acrobat",
+            "Sock and Buskin",
+            "Swashbuckler",
+            "Bloodstone",
+            "Arrowhead",
+            "Onyx Agate",
+            "Showman",
+            "Flower Pot",
+            "Blueprint",
+            "Wee Joker",
+            "Merry Andy",
+            "The Idol",
+            "Seeing Double",
+            "Hit the Road",
+            "The Tribe",
+            "Stuntman",
+            "Brainstorm",
+            "Shoot the Moon",
+            "Bootstraps",
+            "Triboulet",
+            "Yorik",
+            "Chicot",
         }
 
         if "shop" in G and "dollars" in G:
             dollars = G["dollars"]
             cards = G["shop"]["cards"]
-            #logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
+            # logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
 
             for i, card in enumerate(cards):
-                if card["label"] in specific_joker_cards and card["label"] not in self.attempted_purchases:
-                    #logging.info(f"Attempting to buy specific card: {card}")
-                    self.attempted_purchases.add(card["label"])  # Track attempted purchases
+                if (
+                    card["label"] in specific_joker_cards
+                    and card["label"] not in self.attempted_purchases
+                ):
+                    # logging.info(f"Attempting to buy specific card: {card}")
+                    self.attempted_purchases.add(
+                        card["label"]
+                    )  # Track attempted purchases
                     return [Actions.BUY_CARD, [i + 1]]
 
-        #logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
+        # logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
         return [Actions.END_SHOP]
-
 
     def select_booster_action(self, G):
         return [Actions.SKIP_BOOSTER_PACK]
