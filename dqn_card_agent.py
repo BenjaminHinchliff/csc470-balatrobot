@@ -133,7 +133,6 @@ HAND_SIZE = 8
 MAX_CARDS = 5
 SUITS = ["Diamonds", "Clubs", "Hearts", "Spades"]
 RANKS = [
-    "1",
     "2",
     "3",
     "4",
@@ -163,12 +162,12 @@ N_ACTIONS = N_CARDS * MAX_CARDS_PER_HAND + len(PLAY_OPTIONS)
 # TAU is the update rate of the target network
 # LR is the learning rate of the ``AdamW`` optimizer
 BATCH_SIZE = 128
-GAMMA = 0.95
-EPS_START = 1.0
+GAMMA = 0.99
+EPS_START = 0.9
 EPS_END = 0.05
-EPS_DECAY = 20000
-TAU = 0.0085
-LR = 7e-5
+EPS_DECAY = 500
+TAU = 0.005
+LR = 1e-4
 
 
 class DQNPlayBot(Bot):
@@ -206,6 +205,9 @@ class DQNPlayBot(Bot):
         self.last_state = None
         self.last_action = None
         self.last_score = 0
+
+        # Tracks previously attempted purchases to avoid repeated buys
+        self.attempted_purchases = set()
 
         if LOAD_CHECKPOINT and CHECKPOINT_PATH is not None:
             self.load_checkpoint(CHECKPOINT_PATH)
@@ -249,6 +251,21 @@ class DQNPlayBot(Bot):
         return [
             self.card_to_int(card["suit"], card["value"]) for card in self.G["hand"]
         ]
+
+    @staticmethod
+    def check_straights(ranks, rank_order):
+        sorted_ranks = sorted(rank_order[rank] for rank in set(ranks))
+        # Look for consecutive sequences
+        consecutive = 1
+        for i in range(1, len(sorted_ranks)):
+            if sorted_ranks[i] == sorted_ranks[i-1] + 1:
+                consecutive += 1
+                if consecutive >= 5:
+                    return True
+            else:
+                consecutive = 1
+        return False
+
     
     def evaluate_hand(self, hand):
         """
@@ -264,49 +281,19 @@ class DQNPlayBot(Bot):
         - Pair: -2 (penalty)
         - High Card: -5 (penalty)
         """
-        ranks = [card["value"] for card in hand]
-        suits = [card["suit"] for card in hand]
-        rank_counts = Counter(ranks)
-        suit_counts = Counter(suits)
+        VALUE_MAP = {
+            "full_house": 20,
+            "three_of_a_kind": 10,
+            "two_pair": 5,
+            "flush": 15,
+            "straight": 15,
+            "pair": -2,
+            "high_card": -5,
+        }
 
-        # three-of-a-kind
-        if 3 in rank_counts.values() and sorted(rank_counts.values()) != [2, 3]:
-            return 10
+        hand_type = self.classify_hand(hand)
+        return VALUE_MAP[hand_type]
 
-        # full house: one three-of-a-kind and one pair
-        if sorted(rank_counts.values()) == [2, 3]:
-            return 20
-
-        # Check for two pair (only if not full house)
-        if list(rank_counts.values()).count(2) == 2:
-            return 5
-
-        # flush
-        if any(count >= 5 for count in suit_counts.values()):
-            return 15
-
-        # Straight
-        # could use better implementation for ace-low and ace-high strategies
-        rank_order = {r: i for i, r in enumerate(RANKS, start=1)}
-        sorted_ranks = sorted(rank_order[rank] for rank in set(ranks))
-        # Look for consecutive sequences
-        consecutive = 1
-        for i in range(1, len(sorted_ranks)):
-            if sorted_ranks[i] == sorted_ranks[i-1] + 1:
-                consecutive += 1
-                if consecutive >= 5:
-                    return 15
-                    break
-            else:
-                consecutive = 1
-        
-        # Check for a single Pair
-        if 2 in rank_counts.values():
-            return -2
-        
-        # If none of the above, it's a High Card situation
-        return -5
-    
     def classify_hand(self, hand):
         """
         To keep track of how the agent is selecting hands.
@@ -319,38 +306,36 @@ class DQNPlayBot(Bot):
         rank_counts = Counter(ranks)
         suit_counts = Counter(suits)
 
-        # flush
-        is_flush = any(count >= 5 for count in suit_counts.values())
-
-        # straight (no ace-high/ace-low)
-        is_straight = False
-        rank_order = {r: i for i, r in enumerate(RANKS, start=1)}
-        sorted_ranks = sorted(rank_order[rank] for rank in set(ranks))
-        consecutive = 1
-        for i in range(1, len(sorted_ranks)):
-            if sorted_ranks[i] == sorted_ranks[i - 1] + 1:
-                consecutive += 1
-                if consecutive >= 5:
-                    is_straight = True
-                    break
-            else:
-                consecutive = 1
-
         # Determine hand type based on a hierarchy:
         # Full house, flush, straight, three-of-a-kind, two pair, pair, high card
-        if sorted(rank_counts.values()) == [2, 3]:
-            return "full_house"
-        if is_flush:
-            return "flush"
-        if is_straight:
+
+        # straights
+        # ace-high
+        rank_order = {r: i for i, r in enumerate(RANKS, start=2)}
+        if DQNPlayBot.check_straights(ranks, rank_order):
             return "straight"
-        if 3 in rank_counts.values():
+        # ace-low
+        rank_order["Ace"] = 1
+        if DQNPlayBot.check_straights(ranks, rank_order):
+            return "straight"
+
+
+        # full house: one three-of-a-kind and one pair
+        # flush
+        if any(count >= 5 for count in suit_counts.values()):
+            return "flush"
+        elif all(count in rank_counts.values() for count in [2, 3]):
+            return "full_house"
+        # three-of-a-kind
+        elif 3 in rank_counts.values():
             return "three_of_a_kind"
-        if list(rank_counts.values()).count(2) >= 2:
+        # Check for two pair (only if not full house)
+        elif list(rank_counts.values()).count(2) >= 2:
             return "two_pair"
-        if 2 in rank_counts.values():
+        elif 2 in rank_counts.values():
             return "pair"
-        return "high_card"
+        else:
+            return "high_card"
 
     def random_action(self):
         hand = torch.tensor(self.hand_to_ints(), dtype=torch.float32)
@@ -628,7 +613,6 @@ class DQNPlayBot(Bot):
         return command
 
     def select_shop_action(self, G):
-        global attempted_purchases
         #logging.info(f"Shop state received: {G}")
 
         specific_joker_cards = {
@@ -649,9 +633,9 @@ class DQNPlayBot(Bot):
             #logging.info(f"Current dollars: {dollars}, Available cards: {cards}")
 
             for i, card in enumerate(cards):
-                if card["label"] in specific_joker_cards and card["label"] not in attempted_purchases:
+                if card["label"] in specific_joker_cards and card["label"] not in self.attempted_purchases:
                     #logging.info(f"Attempting to buy specific card: {card}")
-                    attempted_purchases.add(card["label"])  # Track attempted purchases
+                    self.attempted_purchases.add(card["label"])  # Track attempted purchases
                     return [Actions.BUY_CARD, [i + 1]]
 
         #logging.info("No specific joker cards found or already attempted. Ending shop interaction.")
