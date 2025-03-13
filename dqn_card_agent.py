@@ -598,6 +598,11 @@ class DQNPlayBot(Bot):
         enc_hand = F.one_hot(torch.tensor([hand]), num_classes=len(SUITS) * len(RANKS))
         # currently the state is just the state of the hand (multi-hot encoded)
         state = enc_hand.sum(dim=1).to(device, dtype=torch.float)
+        
+        print("\t\t" + "\t".join(RANKS))
+        for i, suit in enumerate(SUITS):
+            place = len(RANKS) * i
+            print(f'{suit}\t\t{"\t".join(str(c.item()) for c in state[0][place:place + len(RANKS)])}')
 
         if self.steps_done % CHECKPOINT_STEPS == 0:
             self.save_checkpoint(self.steps_done)
@@ -693,8 +698,8 @@ if __name__ == "__main__":
     bot.start_balatro_instance()
     time.sleep(10)
 
-    for i in range(attempts):
-        print(f"attempt: {i}")
-        bot.run()
+    # for i in range(attempts):
+    #     print(f"attempt: {i}")
+    bot.run()
     bot.stop_balatro_instance()
     bot.writer.close()

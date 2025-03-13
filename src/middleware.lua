@@ -525,9 +525,9 @@ local function w_gamestate(...)
 
     -- If we lose a run, we want to go back to the main menu
     -- Before we try to start a new run
-    if _k == 'STATE' and _v == G.STATES.GAME_OVER then
-        G.FUNCS.go_to_menu({})
-    end
+    -- if _k == 'STATE' and _v == G.STATES.GAME_OVER then
+    --     G.FUNCS.go_to_menu({})
+    -- end
 
     if _k == 'STATE' and _v == G.STATES.MENU then
         Middleware.c_start_run()
