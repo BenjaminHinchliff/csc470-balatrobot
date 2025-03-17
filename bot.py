@@ -85,6 +85,10 @@ class Bot:
         self.state = {}
 
     @abc.abstractmethod
+    def start_run(self):
+        pass
+
+    @abc.abstractmethod
     def skip_or_select_blind(self, G):
         raise NotImplementedError(
             "Error: Bot.skip_or_select_blind must be implemented."
@@ -214,6 +218,7 @@ class Bot:
                 seed = self.seed
                 if seed is None:
                     seed = self.random_seed()
+                self.start_run()
                 return [
                     Actions.START_RUN,
                     self.stake,

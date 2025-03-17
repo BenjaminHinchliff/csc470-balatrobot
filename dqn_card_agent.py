@@ -1,12 +1,15 @@
 import math
 import os
 import random
-from collections import Counter, namedtuple, deque
+from collections import Counter, defaultdict, namedtuple, deque
 import random
 import time
 from pathlib import Path
 from datetime import datetime
 import sys
+
+import numpy as np
+import pandas as pd
 
 import torch
 import torch.nn as nn
@@ -194,7 +197,7 @@ class DQNPlayBot(Bot):
             "flush": 0,
             "full_house": 0,
         }
-
+        self.csv_metrics = defaultdict(list)
         # tensorboard logging
         run_id = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
         self.writer = SummaryWriter(log_dir=f"runs/dqn_balatro_{run_id}")
@@ -210,6 +213,7 @@ class DQNPlayBot(Bot):
         self.last_action = None
         self.last_command = None
         self.last_score = 0
+        self.last_round = None
 
         # Tracks previously attempted purchases to avoid repeated buys
         self.attempted_purchases = set()
@@ -535,6 +539,24 @@ class DQNPlayBot(Bot):
         if self.steps_done % CHECKPOINT_STEPS == 0 and SAVE_CHECKPOINT:
             self.save_checkpoint(self.steps_done)
 
+    def start_run(self):
+        # this doesn't have the ante :/
+        if self.last_round:
+            self.csv_metrics["step"].append(self.steps_done)
+            self.csv_metrics["high_card"].append(self.hand_counts["high_card"])
+            self.csv_metrics["pair"].append(self.hand_counts["pair"])
+            self.csv_metrics["two_pair"].append(self.hand_counts["two_pair"])
+            self.csv_metrics["three_of_a_kind"].append(
+                self.hand_counts["three_of_a_kind"]
+            )
+            self.csv_metrics["straight"].append(self.hand_counts["straight"])
+            self.csv_metrics["flush"].append(self.hand_counts["flush"])
+            self.csv_metrics["full_house"].append(self.hand_counts["full_house"])
+            self.csv_metrics["last_hand_score"].append(self.last_score)
+            self.csv_metrics["final_round"].append(self.last_round)
+            df = pd.DataFrame(self.csv_metrics)
+            df.to_csv("train_metrics.csv")
+
     def select_cards_from_hand(self, G):
         """
         Option 1:
@@ -575,7 +597,8 @@ class DQNPlayBot(Bot):
         )
 
         chip_reward = score - self.last_score
-        is_final = chip_reward < 0
+        # TODO: this is bugged, should be integrating with start_run to detect when a round ends
+        is_final = chip_reward < 0 and self.last_round + 1 != self.G["round"]
 
         # evaluate current hand, apply bonus to better hands (duh)
         if self.last_command is not None:
@@ -619,6 +642,7 @@ class DQNPlayBot(Bot):
             self.last_state = state
             self.last_action = action
             self.last_command = command
+            self.last_round = self.G["round"]
 
             if self.validate_command(command):
                 break
