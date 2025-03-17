@@ -208,6 +208,7 @@ class DQNPlayBot(Bot):
         self.memory = ReplayMemory(capacity=2500)
         self.last_state = None
         self.last_action = None
+        self.last_command = None
         self.last_score = 0
 
         # Tracks previously attempted purchases to avoid repeated buys
@@ -356,16 +357,16 @@ class DQNPlayBot(Bot):
         ).to(device)
 
     def build_choices_from_action(self, actions, hand_encoded):
-        card_choices = (
+        card_choices = torch.multinomial(
             (
-                actions[:, : N_CARDS * MAX_CARDS_PER_HAND].view(
-                    -1, MAX_CARDS_PER_HAND, N_CARDS
-                )
+                actions[:, : N_CARDS * MAX_CARDS_PER_HAND]
+                .view(-1, MAX_CARDS_PER_HAND, N_CARDS)
+                .softmax(dim=2)
                 * hand_encoded.unsqueeze(1)
-            )
-            .max(2)
-            .indices
+            ).view(-1, N_CARDS),
+            num_samples=1,
         )
+        card_choices = card_choices.view(-1, MAX_CARDS_PER_HAND)
         option_choice = actions[:, N_CARDS * MAX_CARDS_PER_HAND :].max(1).indices
         return torch.cat((card_choices, option_choice.unsqueeze(1)), dim=1)
 
@@ -397,7 +398,7 @@ class DQNPlayBot(Bot):
         action = tensor[0]
         cards = action[:-1]
         option = action[-1]
-        selection = []
+        selection = set()
         for card in cards:
             suit, rank = self.int_to_card(int(card.item()))
             try:
@@ -409,11 +410,11 @@ class DQNPlayBot(Bot):
                     )
                 )
                 # lua indexes start at 1 (guess how I found out)
-                selection.append(hand_index + 1)
+                selection.add(hand_index + 1)
             except StopIteration:
                 pass
 
-        return [PLAY_OPTIONS[int(option.item())], selection]
+        return [PLAY_OPTIONS[int(option.item())], list(selection)]
 
     def validate_command(self, command) -> bool:
         """
@@ -574,12 +575,16 @@ class DQNPlayBot(Bot):
         )
 
         chip_reward = score - self.last_score
+        is_final = chip_reward < 0
 
         # evaluate current hand, apply bonus to better hands (duh)
-        hand_bonus = self.evaluate_hand(self.G["hand"])
+        if self.last_command is not None:
+            last_play = [self.G["hand"][i - 1] for i in self.last_command[1]]
+            hand_bonus = self.evaluate_hand(last_play)
+        else:
+            hand_bonus = 0
 
-        reward = max(chip_reward + resource_bonus + hand_bonus, 0)
-        is_final = reward < 0
+        reward = max(chip_reward, 0) + hand_bonus + resource_bonus
         self.writer.add_scalar("Reward/Delta", reward, self.steps_done)
         # print(f"reward delta: {reward}")
 
@@ -613,12 +618,13 @@ class DQNPlayBot(Bot):
             self.last_score = score
             self.last_state = state
             self.last_action = action
+            self.last_command = command
 
             if self.validate_command(command):
                 break
             else:
                 retries += 1
-                reward = 0
+                reward = -17
                 is_final = False
 
         self.writer.add_scalar("Action Retries", retries, self.steps_done)
