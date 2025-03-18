@@ -2,7 +2,10 @@ __pycache__
 Balatro
 gamestate_cache
 .condaenv
-runs
+runs*/
 checkpoints
 .checkpoint
 config.lua
+.ipynb_checkpoints/
+*.png
+*.csv
