@@ -1,5 +1,5 @@
 # CSC570 Balatro
-
+Developers: Frank Assumma, Ben Hinchliff, Sean Sponsler, and Luca Ornstil
 Experiments with building an agent for balatro for Cal Poly's CSC570 AI and
 Games Topic course with Dr. Rodrigo Canaan.
 
